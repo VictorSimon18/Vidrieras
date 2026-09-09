@@ -8,6 +8,23 @@ Todo el procesamiento ocurre **en el navegador**, usando la Canvas API y un Web 
 No hay backend: ninguna imagen sale nunca del dispositivo del usuario, y el proyecto se
 puede desplegar como sitio estático.
 
+## La forma más rápida de probarlo: `vidrieras.html`
+
+El repositorio incluye **[`vidrieras.html`](./vidrieras.html)**, un único archivo HTML
+autocontenido (CSS, JS y el Web Worker inlineados) que funciona con solo **hacer doble
+clic** sobre él y abrirlo en el navegador. No hace falta Node, ni `npm install`, ni
+ningún servidor: basta con el archivo.
+
+Es exactamente la misma app: mismo pipeline, mismos controles, worker incluido para no
+bloquear la interfaz. La única diferencia con el resto del proyecto es que aquí el
+Web Worker no vive en un archivo aparte (eso no es posible al abrir un HTML con
+`file://`), sino que su código va embebido en un `<script type="text/plain">` dentro del
+propio HTML y se instancia en tiempo de ejecución a partir de un `Blob`.
+
+Este archivo se genera con `npm run build:standalone` (ver más abajo) a partir del
+código fuente de `src/`, así que si modificas algo ahí, vuelve a ejecutar ese comando
+para regenerarlo.
+
 ## Cómo funciona
 
 1. Se cargan los píxeles de la imagen en un `ImageData` (limitando el lado más largo a
@@ -33,8 +50,12 @@ que la interfaz nunca se bloquea mientras se procesa una imagen.
 
 ```
 index.html                    Estructura de la página (controles + canvases)
+vidrieras.html                Build standalone: todo en un único archivo (generado)
+scripts/
+  build-standalone.mjs        Genera vidrieras.html a partir de src/ con esbuild
 src/
-  main.js                     Orquestador: wiring de la UI, worker y renderizado
+  main.js                     Orquestador (build Vite): wiring de la UI, worker y render
+  standalone-entry.js         Igual que main.js, pero usado por el build standalone
   style.css                   Estilos
   modules/
     imageLoader.js            Carga de archivos / drag&drop / imagen de ejemplo
@@ -76,6 +97,17 @@ Para previsualizar el build de producción localmente:
 ```bash
 npm run preview
 ```
+
+## Regenerar el HTML standalone
+
+```bash
+npm run build:standalone
+```
+
+Vuelve a generar [`vidrieras.html`](./vidrieras.html) a partir del código en `src/`
+(usando [esbuild](https://esbuild.github.io/) para empaquetar el JS y el Web Worker en
+línea). Ejecútalo cada vez que cambies algo en `src/` si quieres que ese archivo quede
+al día.
 
 ## Uso
 
