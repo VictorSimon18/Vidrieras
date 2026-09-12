@@ -39,19 +39,28 @@
             <div class="control-row">
               <label for="color-count-slider">
                 Colores de vidrio
-                <span class="value-badge" id="color-count-value">14 colores</span>
+                <span class="value-badge" id="color-count-value">9 colores</span>
               </label>
-              <input type="range" id="color-count-slider" min="4" max="32" step="1" value="14" />
-              <p class="hint">Nº de tonos de vidrio en los que se reduce la imagen. Menos colores = look más abstracto.</p>
+              <input type="range" id="color-count-slider" min="4" max="20" step="1" value="9" />
+              <p class="hint">Nº de tonos de vidrio en los que se reduce la imagen. Pocos colores da piezas más grandes y simples, como en una vidriera real.</p>
             </div>
 
             <div class="control-row">
               <label for="piece-size-slider">
                 Tamaño de las piezas
-                <span class="value-badge" id="piece-size-value">55 px</span>
+                <span class="value-badge" id="piece-size-value">90 px</span>
               </label>
-              <input type="range" id="piece-size-slider" min="15" max="150" step="5" value="55" />
-              <p class="hint">Las piezas siguen los contornos reales de la imagen (cara, ojos, ropa...); esto solo limita su tamaño máximo. Las zonas de detalle generan piezas pequeñas automáticamente.</p>
+              <input type="range" id="piece-size-slider" min="30" max="200" step="5" value="90" />
+              <p class="hint">Piezas más grandes = figuras simples (una cara, una manga...). Los detalles pequeños (ojos, boca) se funden con la pieza que los rodea en vez de recortarse aparte.</p>
+            </div>
+
+            <div class="control-row">
+              <label for="detail-slider">
+                Detalle pintado
+                <span class="value-badge" id="detail-value">60%</span>
+              </label>
+              <input type="range" id="detail-slider" min="0" max="100" step="5" value="60" />
+              <p class="hint">Trazo oscuro fino sobre el vidrio (a la manera de la grisalla) para recuperar rasgos como ojos o pliegues sin convertirlos en piezas separadas.</p>
             </div>
 
             <div class="control-row">

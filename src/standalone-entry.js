@@ -16,6 +16,8 @@ const colorCountSlider = document.getElementById('color-count-slider');
 const colorCountValue = document.getElementById('color-count-value');
 const pieceSizeSlider = document.getElementById('piece-size-slider');
 const pieceSizeValue = document.getElementById('piece-size-value');
+const detailSlider = document.getElementById('detail-slider');
+const detailValue = document.getElementById('detail-value');
 const lineWidthSlider = document.getElementById('line-width-slider');
 const lineWidthValue = document.getElementById('line-width-value');
 const glassIntensitySlider = document.getElementById('glass-intensity-slider');
@@ -64,6 +66,7 @@ worker.onmessage = (event) => {
       pieceCentroidY: new Float64Array(msg.pieceCentroidY),
       pieceArea: new Uint32Array(msg.pieceArea),
       pieceCount: msg.pieceCount,
+      edgeMagnitude: new Uint8ClampedArray(msg.edgeMagnitude),
       width: msg.width,
       height: msg.height,
     };
@@ -168,6 +171,7 @@ function renderNow() {
     ...lastComputeResult,
     lineWidth: Number(lineWidthSlider.value),
     glassIntensity: Number(glassIntensitySlider.value) / 100,
+    detailAmount: Number(detailSlider.value) / 100,
     leadColor: leadingColorCheckbox.checked ? LEAD_COLOR_WARM : LEAD_COLOR_DARK,
   });
 }
@@ -187,6 +191,10 @@ colorCountSlider.addEventListener('input', () => {
 pieceSizeSlider.addEventListener('input', () => {
   pieceSizeValue.textContent = `${pieceSizeSlider.value} px`;
   debouncedFullProcess();
+});
+detailSlider.addEventListener('input', () => {
+  detailValue.textContent = `${detailSlider.value}%`;
+  debouncedRenderOnly();
 });
 
 lineWidthSlider.addEventListener('input', () => {

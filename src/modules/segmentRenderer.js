@@ -15,10 +15,12 @@
  * @param {Float64Array} data.pieceCentroidY
  * @param {Uint32Array} data.pieceArea
  * @param {number} data.pieceCount
+ * @param {Uint8ClampedArray} data.edgeMagnitude mapa de bordes de la imagen original, para el detalle pintado
  * @param {number} data.width
  * @param {number} data.height
  * @param {number} data.lineWidth grosor del plomo en px
  * @param {number} data.glassIntensity intensidad del brillo, 0-1
+ * @param {number} data.detailAmount intensidad del detalle pintado (grisalla), 0-1
  * @param {string} data.leadColor color de las líneas de plomo (hex)
  */
 export function renderStainedGlass(canvas, data) {
@@ -29,10 +31,12 @@ export function renderStainedGlass(canvas, data) {
     pieceCentroidY,
     pieceArea,
     pieceCount,
+    edgeMagnitude,
     width,
     height,
     lineWidth,
     glassIntensity,
+    detailAmount,
     leadColor,
   } = data;
 
@@ -47,6 +51,7 @@ export function renderStainedGlass(canvas, data) {
     pieceRadius[i] = Math.max(1, Math.sqrt(pieceArea[i] / Math.PI));
   }
 
+  const { r: lr, g: lg, b: lb } = hexToRgb(leadColor);
   const total = width * height;
   for (let p = 0; p < total; p++) {
     const label = labels[p];
@@ -77,6 +82,21 @@ export function renderStainedGlass(canvas, data) {
       b = b + (255 - b) * highlightAmt - b * shadowAmt;
     }
 
+    if (detailAmount > 0 && edgeMagnitude) {
+      // Detalle "pintado" (grisalla): un trazo oscuro fino sobre el rostro,
+      // la ropa, etc., a partir de los bordes de la foto original. No
+      // fragmenta el vidrio en más piezas, solo se pinta encima, igual que
+      // el detalle fino de una vidriera real.
+      const threshold = 255 * (1 - detailAmount * 0.85);
+      const mag = edgeMagnitude[p];
+      if (mag > threshold) {
+        const alpha = Math.min(1, ((mag - threshold) / (255 - threshold)) * 0.9);
+        r = r + (lr - r) * alpha;
+        g = g + (lg - g) * alpha;
+        b = b + (lb - b) * alpha;
+      }
+    }
+
     const o = p * 4;
     out[o] = r;
     out[o + 1] = g;
@@ -88,7 +108,6 @@ export function renderStainedGlass(canvas, data) {
     const boundary = detectBoundaries(labels, width, height);
     const radius = Math.max(1, Math.round(lineWidth / 2));
     const dilated = dilate(boundary, width, height, radius);
-    const { r: lr, g: lg, b: lb } = hexToRgb(leadColor);
     for (let p = 0; p < total; p++) {
       if (!dilated[p]) continue;
       const o = p * 4;
