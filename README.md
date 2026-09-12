@@ -27,23 +27,32 @@ para regenerarlo.
 
 ## Cómo funciona
 
+El algoritmo no genera un mosaico aleatorio: segmenta la propia imagen en regiones de
+color, así que las piezas terminan siguiendo los contornos reales del sujeto (la cara,
+los ojos, la boca, la ropa...), como en una vidriera figurativa real.
+
 1. Se cargan los píxeles de la imagen en un `ImageData` (limitando el lado más largo a
    2000 px para mantener el rendimiento).
-2. Se genera un conjunto de puntos semilla, de dos formas posibles:
-   - **Aleatoria**, con densidad configurable (nº de piezas).
-   - **Sesgada a bordes**: se calcula un mapa de bordes con el operador de **Sobel** y se
-     muestrean más puntos en las zonas de alto contraste, para que las piezas respeten
-     mejor los contornos importantes de la imagen.
-3. Con esos puntos se construye un diagrama de **Voronoi** (usando
-   [`d3-delaunay`](https://github.com/d3/d3-delaunay)).
-4. Para cada celda se calcula el color medio de los píxeles originales que caen dentro, y
-   se rellena la celda con ese color plano.
-5. Se dibujan los bordes de todas las celdas con una línea gruesa oscura (el "plomo"),
-   de grosor configurable.
-6. Opcionalmente se añade un brillo/gradiente radial suave dentro de cada pieza para dar
-   sensación de textura de vidrio.
+2. **Cuantización a colores de vidrio**: se agrupan los colores de la imagen en un número
+   limitado de tonos (k-means) y cada tono se satura/ajusta para que parezca un color de
+   vidrio real (más vívido, menos fotográfico) en vez del color medio exacto de la foto.
+3. **Segmentación en regiones**: se agrupan en componentes conexas los píxeles que
+   comparten el mismo color de vidrio. Esto es lo que hace que una pieza sea, por
+   ejemplo, exactamente el ojo o exactamente el labio de la foto, en vez de un fragmento
+   irregular que corta la cara sin criterio.
+4. **Fusión de fragmentos diminutos**: las regiones demasiado pequeñas (ruido, un par de
+   píxeles) se funden con la región grande más cercana mediante un BFS multi-fuente.
+5. **Corte de piezas grandes**: las regiones grandes y planas (fondo, piel, ropa) se
+   subdividen en varias piezas más pequeñas — igual que una lámina de vidrio real se
+   corta en varios trozos — usando un diagrama de Delaunay local
+   ([`d3-delaunay`](https://github.com/d3/d3-delaunay)) por región. Las regiones ya
+   pequeñas (un ojo, un labio) se dejan como una única pieza. Así el tamaño de pieza
+   varía automáticamente: fino en las zonas de detalle, grueso en las zonas planas.
+6. Se dibuja el plomo detectando los píxeles donde cambia de pieza y dilatando esa línea
+   al grosor pedido, y opcionalmente se añade un brillo/gradiente radial suave dentro de
+   cada pieza para dar sensación de textura de vidrio.
 
-Los pasos 2–4 (los más costosos computacionalmente) se ejecutan en un **Web Worker**, así
+Los pasos 2–5 (los más costosos computacionalmente) se ejecutan en un **Web Worker**, así
 que la interfaz nunca se bloquea mientras se procesa una imagen.
 
 ## Estructura del proyecto
@@ -59,12 +68,13 @@ src/
   style.css                   Estilos
   modules/
     imageLoader.js            Carga de archivos / drag&drop / imagen de ejemplo
-    sobel.js                  Detección de bordes (usado dentro del worker)
-    pointGenerator.js         Generación de puntos semilla (usado dentro del worker)
-    voronoiRenderer.js         Pintado del resultado en el <canvas> (celdas, plomo, brillo)
+    colorQuantize.js          Cuantización a colores de vidrio (k-means + saturación)
+    regionSegmentation.js     Componentes conexas + fusión de regiones diminutas
+    pieceSubdivision.js       Corte de regiones grandes en varias piezas (Delaunay local)
+    segmentRenderer.js        Pintado del resultado en el <canvas> (relleno, plomo, brillo)
     ui.js                     Utilidades de UI (debounce, tabs, mensajes de estado)
   worker/
-    glassWorker.js            Web Worker: Sobel + puntos + Delaunay/Voronoi + color medio
+    glassWorker.js            Web Worker: orquesta cuantización + segmentación + corte
 ```
 
 ## Requisitos
@@ -115,12 +125,13 @@ al día.
    selector de archivos). También puedes probar con el botón **"Usar imagen de
    ejemplo"**, que genera una imagen sintética sin necesidad de subir ningún archivo.
 2. Ajusta los controles a tu gusto:
-   - **Tamaño de las piezas**: número de puntos del Voronoi (más puntos = piezas más
-     pequeñas y mosaico más fino).
+   - **Colores de vidrio**: número de tonos a los que se reduce la imagen. Menos colores
+     da un resultado más abstracto/gráfico; más colores se acerca más a la foto original.
+   - **Tamaño de las piezas**: tamaño máximo (en píxeles) de cada fragmento antes de
+     cortarlo en varios. Las piezas ya siguen los contornos reales de la imagen por sí
+     solas; este control solo limita cuánto puede crecer una pieza en zonas planas.
    - **Grosor del plomo**: ancho de las líneas oscuras que separan las piezas.
    - **Brillo del vidrio**: intensidad del gradiente que simula la textura del cristal.
-   - **Sesgar piezas hacia los bordes**: activa/desactiva el muestreo ponderado por
-     contornos (Sobel).
    - **Plomo con tono cálido**: alterna entre plomo negro y un tono marrón oscuro.
 3. Pulsa **"Generar vidriera"** para procesar la imagen por primera vez. A partir de ahí,
    mover cualquier control vuelve a aplicar el efecto automáticamente (con un pequeño
@@ -129,12 +140,19 @@ al día.
 
 ## Notas técnicas
 
-- El cálculo de color medio por celda usa `delaunay.find(x, y, hint)` reutilizando el
-  índice de la última consulta como punto de partida, lo que lo hace muy rápido al
-  recorrer la imagen en orden de barrido (scanline). Para imágenes grandes se aplica
-  además un muestreo con paso (stride) adaptativo en vez de leer cada píxel individual.
+- La fusión de regiones diminutas usa un BFS multi-fuente sembrado desde todas las
+  regiones "grandes" a la vez: cada píxel de una región pequeña queda asignado a la
+  región grande cuya "onda" lo alcanza primero, lo que en la práctica equivale a
+  fundirlo con su vecina más próxima, en una sola pasada O(ancho×alto).
+- El corte de regiones grandes en varias piezas reutiliza `delaunay.find(x, y, hint)`
+  (igual que la versión anterior del proyecto) para asignar cada píxel a su fragmento
+  más cercano de forma muy rápida, pero aplicado solo dentro de cada región en vez de a
+  toda la imagen.
+- El plomo se obtiene detectando los píxeles donde una pieza linda con otra distinta, y
+  dilatando esa línea al grosor pedido mediante una dilatación separable
+  (horizontal + vertical) de coste O(ancho×alto), independiente del grosor elegido.
 - Cambiar el grosor del plomo o el brillo del vidrio **no** vuelve a llamar al worker:
   esos parámetros solo afectan al dibujado final, así que se re-renderizan al instante
-  reutilizando el diagrama de Voronoi y los colores ya calculados. Cambiar el número de
-  piezas o el sesgo a bordes sí dispara un nuevo cálculo en el worker, porque cambia la
-  posición de los puntos semilla.
+  reutilizando las piezas y colores ya calculados. Cambiar los colores de vidrio o el
+  tamaño de las piezas sí dispara un nuevo cálculo en el worker, porque cambia la
+  segmentación.

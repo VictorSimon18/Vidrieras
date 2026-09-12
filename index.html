@@ -37,12 +37,21 @@
             <h2>Ajustes</h2>
 
             <div class="control-row">
-              <label for="points-slider">
-                Tamaño de las piezas
-                <span class="value-badge" id="points-value">900 piezas</span>
+              <label for="color-count-slider">
+                Colores de vidrio
+                <span class="value-badge" id="color-count-value">14 colores</span>
               </label>
-              <input type="range" id="points-slider" min="60" max="4000" step="20" value="900" />
-              <p class="hint">Menos piezas = fragmentos más grandes. Más piezas = mosaico más fino.</p>
+              <input type="range" id="color-count-slider" min="4" max="32" step="1" value="14" />
+              <p class="hint">Nº de tonos de vidrio en los que se reduce la imagen. Menos colores = look más abstracto.</p>
+            </div>
+
+            <div class="control-row">
+              <label for="piece-size-slider">
+                Tamaño de las piezas
+                <span class="value-badge" id="piece-size-value">55 px</span>
+              </label>
+              <input type="range" id="piece-size-slider" min="15" max="150" step="5" value="55" />
+              <p class="hint">Las piezas siguen los contornos reales de la imagen (cara, ojos, ropa...); esto solo limita su tamaño máximo. Las zonas de detalle generan piezas pequeñas automáticamente.</p>
             </div>
 
             <div class="control-row">
@@ -59,14 +68,6 @@
                 <span class="value-badge" id="glass-intensity-value">35%</span>
               </label>
               <input type="range" id="glass-intensity-slider" min="0" max="100" step="5" value="35" />
-            </div>
-
-            <div class="control-row checkbox-row">
-              <label class="checkbox-label">
-                <input type="checkbox" id="edge-bias-checkbox" checked />
-                Sesgar piezas hacia los bordes de la imagen
-              </label>
-              <p class="hint">Detecta contornos (Sobel) para que las piezas respeten mejor las formas.</p>
             </div>
 
             <div class="control-row">

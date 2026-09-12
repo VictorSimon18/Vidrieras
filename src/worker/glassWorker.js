@@ -1,41 +1,83 @@
-// Web Worker: aquí ocurre todo el trabajo pesado (detección de bordes,
-// generación de puntos y cálculo del color medio de cada celda de Voronoi)
-// para no bloquear el hilo principal ni la UI.
+// Web Worker: pipeline completo de segmentación en "vidriera realista".
+// 1) Cuantiza la imagen a un número limitado de colores de vidrio.
+// 2) Agrupa píxeles del mismo color en regiones (componentes conexas), lo
+//    que hace que las piezas seteen literalmente los contornos reales de
+//    la imagen (cara, ojos, boca, ropa...).
+// 3) Funde las regiones diminutas (ruido) con su vecina más próxima.
+// 4) Corta las regiones grandes y planas en varias piezas más pequeñas.
+// Todo esto es costoso en imágenes grandes, así que corre aquí para no
+// bloquear la interfaz.
 
-import { Delaunay } from 'd3-delaunay';
-import { computeSobelEdges } from '../modules/sobel.js';
-import { generateSeedPoints } from '../modules/pointGenerator.js';
+import { quantizeColors } from '../modules/colorQuantize.js';
+import { connectedComponents, mergeSmallRegions } from '../modules/regionSegmentation.js';
+import { subdivideRegions } from '../modules/pieceSubdivision.js';
 
 self.onmessage = (event) => {
   const msg = event.data;
   if (msg.type !== 'process') return;
 
-  const { requestId, buffer, width, height, count, edgeBias } = msg;
+  const { requestId, buffer, width, height, colorCount, pieceSize } = msg;
   const data = new Uint8ClampedArray(buffer);
 
   try {
-    postStatus(requestId, 'Analizando la imagen...');
-    const edgeMap = edgeBias ? computeSobelEdges(data, width, height) : null;
+    postStatus(requestId, 'Analizando los colores...');
+    const { labels: colorLabels, glassColors } = quantizeColors(data, width, height, colorCount);
 
-    postStatus(requestId, 'Colocando piezas de vidrio...');
-    const pointCount = Math.max(4, Math.min(count, width * height));
-    const points = generateSeedPoints({ width, height, count: pointCount, edgeBias, edgeMap });
+    postStatus(requestId, 'Detectando las formas...');
+    const components = connectedComponents(colorLabels, width, height);
 
-    postStatus(requestId, 'Calculando colores...');
-    const delaunay = new Delaunay(points);
-    const colors = computeCellColors(delaunay, points, pointCount, data, width, height);
+    postStatus(requestId, 'Uniendo fragmentos diminutos...');
+    const minArea = Math.max(6, Math.round((pieceSize * 0.35) ** 2));
+    const merged = mergeSmallRegions(
+      components.labels,
+      components.count,
+      components.colorIndex,
+      components.area,
+      width,
+      height,
+      minArea
+    );
+
+    postStatus(requestId, 'Cortando el vidrio en piezas...');
+    const targetPieceArea = Math.max(minArea * 2, pieceSize * pieceSize);
+    const pieces = subdivideRegions(
+      merged.labels,
+      merged.count,
+      merged.colorIndex,
+      merged.area,
+      width,
+      height,
+      targetPieceArea
+    );
+
+    const pieceColors = new Uint8ClampedArray(pieces.pieceCount * 3);
+    for (let i = 0; i < pieces.pieceCount; i++) {
+      const ci = pieces.pieceColorIndex[i];
+      pieceColors[i * 3] = glassColors[ci * 3];
+      pieceColors[i * 3 + 1] = glassColors[ci * 3 + 1];
+      pieceColors[i * 3 + 2] = glassColors[ci * 3 + 2];
+    }
 
     self.postMessage(
       {
         type: 'result',
         requestId,
-        points: points.buffer,
-        colors: colors.buffer,
-        pointCount,
+        labels: pieces.labels.buffer,
+        pieceColors: pieceColors.buffer,
+        pieceCentroidX: pieces.pieceCentroidX.buffer,
+        pieceCentroidY: pieces.pieceCentroidY.buffer,
+        pieceArea: pieces.pieceArea.buffer,
+        pieceCount: pieces.pieceCount,
         width,
         height,
       },
-      [points.buffer, colors.buffer]
+      [
+        pieces.labels.buffer,
+        pieceColors.buffer,
+        pieces.pieceCentroidX.buffer,
+        pieces.pieceCentroidY.buffer,
+        pieces.pieceArea.buffer,
+      ]
     );
   } catch (err) {
     self.postMessage({ type: 'error', requestId, message: err.message || String(err) });
@@ -44,56 +86,4 @@ self.onmessage = (event) => {
 
 function postStatus(requestId, message) {
   self.postMessage({ type: 'status', requestId, message });
-}
-
-/**
- * Calcula el color medio (RGB) de cada celda de Voronoi muestreando los
- * píxeles de la imagen original que caen dentro de ella. Usa
- * `delaunay.find` con una pista (hint) reutilizada entre consultas
- * consecutivas, lo que lo hace muy rápido al recorrer la imagen en orden
- * de barrido (scanline). Para imágenes grandes se aplica un muestreo con
- * paso (stride) adaptativo en vez de leer cada píxel.
- */
-function computeCellColors(delaunay, points, pointCount, data, width, height) {
-  const sums = new Float64Array(pointCount * 3);
-  const counts = new Uint32Array(pointCount);
-
-  const totalPixels = width * height;
-  const targetSamples = 1_000_000;
-  const stride = Math.max(1, Math.round(Math.sqrt(totalPixels / targetSamples)));
-
-  let hint = 0;
-  for (let y = 0; y < height; y += stride) {
-    hint = delaunay.find(0, y, hint);
-    for (let x = 0; x < width; x += stride) {
-      hint = delaunay.find(x, y, hint);
-      const p = (y * width + x) * 4;
-      const base = hint * 3;
-      sums[base] += data[p];
-      sums[base + 1] += data[p + 1];
-      sums[base + 2] += data[p + 2];
-      counts[hint]++;
-    }
-  }
-
-  const colors = new Uint8ClampedArray(pointCount * 3);
-  for (let i = 0; i < pointCount; i++) {
-    const base = i * 3;
-    if (counts[i] > 0) {
-      colors[base] = sums[base] / counts[i];
-      colors[base + 1] = sums[base + 1] / counts[i];
-      colors[base + 2] = sums[base + 2] / counts[i];
-    } else {
-      // Celda muy pequeña que el muestreo por stride no tocó: usamos el
-      // píxel exacto de la semilla como respaldo.
-      const px = Math.min(width - 1, Math.max(0, Math.round(points[i * 2])));
-      const py = Math.min(height - 1, Math.max(0, Math.round(points[i * 2 + 1])));
-      const p = (py * width + px) * 4;
-      colors[base] = data[p];
-      colors[base + 1] = data[p + 1];
-      colors[base + 2] = data[p + 2];
-    }
-  }
-
-  return colors;
 }

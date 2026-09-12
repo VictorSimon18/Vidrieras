@@ -1,6 +1,6 @@
 import './style.css';
 import { loadImageFile, generateSampleImage, drawImageDataToCanvas } from './modules/imageLoader.js';
-import { renderStainedGlass } from './modules/voronoiRenderer.js';
+import { renderStainedGlass } from './modules/segmentRenderer.js';
 import { debounce, setupTabs, setStatus } from './modules/ui.js';
 
 const dropzone = document.getElementById('dropzone');
@@ -8,13 +8,14 @@ const fileInput = document.getElementById('file-input');
 const pickFileBtn = document.getElementById('pick-file-btn');
 const sampleImageBtn = document.getElementById('sample-image-btn');
 
-const pointsSlider = document.getElementById('points-slider');
-const pointsValue = document.getElementById('points-value');
+const colorCountSlider = document.getElementById('color-count-slider');
+const colorCountValue = document.getElementById('color-count-value');
+const pieceSizeSlider = document.getElementById('piece-size-slider');
+const pieceSizeValue = document.getElementById('piece-size-value');
 const lineWidthSlider = document.getElementById('line-width-slider');
 const lineWidthValue = document.getElementById('line-width-value');
 const glassIntensitySlider = document.getElementById('glass-intensity-slider');
 const glassIntensityValue = document.getElementById('glass-intensity-value');
-const edgeBiasCheckbox = document.getElementById('edge-bias-checkbox');
 const leadingColorCheckbox = document.getElementById('leading-color-checkbox');
 
 const generateBtn = document.getElementById('generate-btn');
@@ -34,7 +35,7 @@ const LEAD_COLOR_WARM = '#3a2410';
 /** @type {{imageData: ImageData, width: number, height: number} | null} */
 let currentImage = null;
 
-/** Última salida del worker: puntos + colores, reutilizable para re-render rápido */
+/** Última salida del worker: piezas + colores, reutilizable para re-render rápido */
 let lastComputeResult = null;
 
 let hasGeneratedOnce = false;
@@ -51,9 +52,12 @@ worker.onmessage = (event) => {
     setStatus(statusLine, msg.message);
   } else if (msg.type === 'result') {
     lastComputeResult = {
-      points: new Float64Array(msg.points),
-      colors: new Uint8ClampedArray(msg.colors),
-      pointCount: msg.pointCount,
+      labels: new Int32Array(msg.labels),
+      pieceColors: new Uint8ClampedArray(msg.pieceColors),
+      pieceCentroidX: new Float64Array(msg.pieceCentroidX),
+      pieceCentroidY: new Float64Array(msg.pieceCentroidY),
+      pieceArea: new Uint32Array(msg.pieceArea),
+      pieceCount: msg.pieceCount,
       width: msg.width,
       height: msg.height,
     };
@@ -61,7 +65,7 @@ worker.onmessage = (event) => {
     emptyState.hidden = true;
     downloadBtn.disabled = false;
     generateBtn.disabled = false;
-    setStatus(statusLine, `Listo · ${msg.pointCount} piezas`);
+    setStatus(statusLine, `Listo · ${msg.pieceCount} piezas`);
   } else if (msg.type === 'error') {
     generateBtn.disabled = false;
     setStatus(statusLine, `Error: ${msg.message}`, true);
@@ -145,8 +149,8 @@ function runFullProcess() {
       buffer: bufferCopy,
       width,
       height,
-      count: Number(pointsSlider.value),
-      edgeBias: edgeBiasCheckbox.checked,
+      colorCount: Number(colorCountSlider.value),
+      pieceSize: Number(pieceSizeSlider.value),
     },
     [bufferCopy]
   );
@@ -170,11 +174,14 @@ const debouncedRenderOnly = debounce(renderNow, 80);
 
 generateBtn.addEventListener('click', runFullProcess);
 
-pointsSlider.addEventListener('input', () => {
-  pointsValue.textContent = `${pointsSlider.value} piezas`;
+colorCountSlider.addEventListener('input', () => {
+  colorCountValue.textContent = `${colorCountSlider.value} colores`;
   debouncedFullProcess();
 });
-edgeBiasCheckbox.addEventListener('change', debouncedFullProcess);
+pieceSizeSlider.addEventListener('input', () => {
+  pieceSizeValue.textContent = `${pieceSizeSlider.value} px`;
+  debouncedFullProcess();
+});
 
 lineWidthSlider.addEventListener('input', () => {
   lineWidthValue.textContent = `${lineWidthSlider.value} px`;

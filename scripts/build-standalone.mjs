@@ -1,7 +1,7 @@
 // Genera vidrieras.html: una versión 100% autocontenida de la app (CSS, JS
 // y el Web Worker inlineados) que se puede abrir con doble clic, sin
 // servidor ni "npm run dev". Se regenera con `npm run build:standalone`
-// cada vez que cambie el código fuente en src/.
+// cada vez que cambie el código fuente en src/ o index.html.
 import { build } from 'esbuild';
 import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -29,15 +29,27 @@ function escapeClosingScriptTag(code) {
   return code.replace(/<\/script/gi, '<\\/script');
 }
 
+/** Extrae el contenido de <body>...</body> de index.html, sin el <script> del build de Vite. */
+function extractBody(indexHtml) {
+  const match = indexHtml.match(/<body>([\s\S]*)<\/body>/);
+  if (!match) throw new Error('No se encontró <body> en index.html');
+  return match[1].replace(/\s*<script[^>]*src="\/src\/main\.js"[^>]*>\s*<\/script>\s*$/, '').trimEnd();
+}
+
 async function main() {
-  const [workerCode, mainCode, css, faviconSvg] = await Promise.all([
+  const [workerCode, mainCode, css, faviconSvg, indexHtml] = await Promise.all([
     bundle(p('src/worker/glassWorker.js')),
     bundle(p('src/standalone-entry.js')),
     readFile(p('src/style.css'), 'utf-8'),
     readFile(p('public/favicon.svg'), 'utf-8'),
+    readFile(p('index.html'), 'utf-8'),
   ]);
 
   const faviconDataUri = `data:image/svg+xml;base64,${Buffer.from(faviconSvg, 'utf-8').toString('base64')}`;
+  const body = extractBody(indexHtml).replace(
+    'src="/favicon.svg"',
+    `src="${faviconDataUri}"`
+  );
 
   const html = `<!doctype html>
 <html lang="es">
@@ -51,108 +63,7 @@ ${css}
     </style>
   </head>
   <body>
-    <div id="app">
-      <header class="topbar">
-        <div class="brand">
-          <img src="${faviconDataUri}" alt="" class="brand-icon" />
-          <div>
-            <h1>Vidrieras</h1>
-            <p class="subtitle">Convierte tus fotos en un mosaico de vidriera, todo en tu navegador</p>
-          </div>
-        </div>
-      </header>
-
-      <main class="layout">
-        <section class="panel controls-panel">
-          <div id="dropzone" class="dropzone">
-            <input type="file" id="file-input" accept="image/*" hidden />
-            <div class="dropzone-content">
-              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                <path d="M12 16V4M12 4l-4 4M12 4l4 4" stroke-linecap="round" stroke-linejoin="round"/>
-                <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-              <p><strong>Arrastra una imagen aquí</strong> o haz clic para elegirla</p>
-              <button type="button" id="pick-file-btn" class="btn btn-secondary">Elegir imagen</button>
-              <button type="button" id="sample-image-btn" class="btn btn-link">Usar imagen de ejemplo</button>
-            </div>
-          </div>
-
-          <div class="controls">
-            <h2>Ajustes</h2>
-
-            <div class="control-row">
-              <label for="points-slider">
-                Tamaño de las piezas
-                <span class="value-badge" id="points-value">900 piezas</span>
-              </label>
-              <input type="range" id="points-slider" min="60" max="4000" step="20" value="900" />
-              <p class="hint">Menos piezas = fragmentos más grandes. Más piezas = mosaico más fino.</p>
-            </div>
-
-            <div class="control-row">
-              <label for="line-width-slider">
-                Grosor del plomo
-                <span class="value-badge" id="line-width-value">3 px</span>
-              </label>
-              <input type="range" id="line-width-slider" min="1" max="14" step="0.5" value="3" />
-            </div>
-
-            <div class="control-row">
-              <label for="glass-intensity-slider">
-                Brillo del vidrio
-                <span class="value-badge" id="glass-intensity-value">35%</span>
-              </label>
-              <input type="range" id="glass-intensity-slider" min="0" max="100" step="5" value="35" />
-            </div>
-
-            <div class="control-row checkbox-row">
-              <label class="checkbox-label">
-                <input type="checkbox" id="edge-bias-checkbox" checked />
-                Sesgar piezas hacia los bordes de la imagen
-              </label>
-              <p class="hint">Detecta contornos (Sobel) para que las piezas respeten mejor las formas.</p>
-            </div>
-
-            <div class="control-row">
-              <label class="checkbox-label">
-                <input type="checkbox" id="leading-color-checkbox" />
-                Plomo con tono cálido en vez de negro
-              </label>
-            </div>
-
-            <div class="actions">
-              <button type="button" id="generate-btn" class="btn btn-primary" disabled>Generar vidriera</button>
-              <button type="button" id="download-btn" class="btn btn-secondary" disabled>Descargar PNG</button>
-            </div>
-
-            <p id="status-line" class="status-line" aria-live="polite"></p>
-          </div>
-        </section>
-
-        <section class="panel preview-panel">
-          <div class="tabs">
-            <button type="button" class="tab-btn active" data-tab="result">Resultado</button>
-            <button type="button" class="tab-btn" data-tab="original">Original</button>
-          </div>
-
-          <div class="canvas-stage">
-            <div class="canvas-wrap" id="result-wrap" data-active="true">
-              <canvas id="result-canvas"></canvas>
-              <div class="empty-state" id="empty-state">
-                <p>Sube una imagen y pulsa <strong>Generar vidriera</strong> para ver el resultado aquí.</p>
-              </div>
-            </div>
-            <div class="canvas-wrap" id="original-wrap">
-              <canvas id="original-canvas"></canvas>
-            </div>
-          </div>
-        </section>
-      </main>
-
-      <footer class="footer">
-        <p>Todo el procesamiento ocurre localmente en tu navegador. Ninguna imagen se sube a ningún servidor.</p>
-      </footer>
-    </div>
+${body}
 
     <script type="text/plain" id="glass-worker-source">${escapeClosingScriptTag(workerCode)}</script>
     <script>${escapeClosingScriptTag(mainCode)}</script>
