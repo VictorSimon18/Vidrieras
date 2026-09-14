@@ -1,74 +1,36 @@
-// Web Worker: pipeline completo de segmentación en "vidriera realista".
-// 1) Cuantiza la imagen a un número limitado de colores de vidrio.
-// 2) Agrupa píxeles del mismo color en regiones (componentes conexas), lo
-//    que hace que las piezas sigan literalmente los contornos reales de
-//    la imagen (cara, ropa...).
-// 3) Funde las regiones pequeñas (ruido, pero también detalles finos como
-//    ojos, cejas o boca) con su vecina más próxima: en una vidriera real
-//    esos detalles no son piezas de vidrio separadas, van pintados sobre
-//    una única pieza.
-// 4) Corta las regiones grandes y planas en varias piezas más pequeñas.
-// 5) Calcula un mapa de bordes (Sobel) sobre la imagen original, que el
-//    render usa para "pintar" ese detalle fino encima del vidrio.
-// Todo esto es costoso en imágenes grandes, así que corre aquí para no
-// bloquear la interfaz.
+// Web Worker: pipeline completo del mosaico de vidriera.
+// 1) Genera puntos semilla uniformemente distribuidos.
+// 2) Construye un diagrama de Voronoi y calcula el color medio de la foto
+//    dentro de cada celda (con delaunay.find(x, y, hint), muy rápido al
+//    recorrer la imagen en orden de barrido).
+// 3) Convierte cada color medio en un "color de vidrio" más vívido.
+// 4) Calcula un mapa de bordes (Sobel) sobre la imagen original, que el
+//    render usa para "pintar" detalle fino (rasgos de la cara, pliegues
+//    de la ropa...) encima del vidrio sin fragmentarlo en más piezas.
+// El recorte de cada celda a un polígono de pocos lados (como el vidrio
+// real) se hace en el hilo principal, ya que es barato y así cambiarlo no
+// requiere volver a calcular los colores.
 
-import { quantizeColors } from '../modules/colorQuantize.js';
-import { connectedComponents, mergeSmallRegions } from '../modules/regionSegmentation.js';
-import { subdivideRegions } from '../modules/pieceSubdivision.js';
+import { Delaunay } from 'd3-delaunay';
+import { generateSeedPoints } from '../modules/pointGenerator.js';
+import { glassifyColor } from '../modules/glassColor.js';
 import { computeSobelEdges } from '../modules/sobel.js';
 
 self.onmessage = (event) => {
   const msg = event.data;
   if (msg.type !== 'process') return;
 
-  const { requestId, buffer, width, height, colorCount, pieceSize } = msg;
+  const { requestId, buffer, width, height, pieceSize } = msg;
   const data = new Uint8ClampedArray(buffer);
 
   try {
-    postStatus(requestId, 'Analizando los colores...');
-    const { labels: colorLabels, glassColors } = quantizeColors(data, width, height, colorCount);
+    postStatus(requestId, 'Colocando las piezas de vidrio...');
+    const count = Math.round(clamp((width * height) / (pieceSize * pieceSize), 8, 6000));
+    const points = generateSeedPoints(width, height, count);
+    const delaunay = new Delaunay(points);
 
-    postStatus(requestId, 'Detectando las formas...');
-    const components = connectedComponents(colorLabels, width, height);
-
-    postStatus(requestId, 'Uniendo detalles finos con su pieza...');
-    // El umbral de fusión es una fracción del área total de la imagen (no
-    // un nº de píxeles fijo), para que escale igual con cualquier
-    // resolución: así ojos, cejas, boca o nariz se funden con la piel
-    // circundante en vez de quedar como piezas de vidrio propias.
-    const totalArea = width * height;
-    const sizeFactor = (pieceSize / 90) ** 2;
-    const minArea = Math.max(24, Math.round(totalArea * 0.006 * sizeFactor));
-    const merged = mergeSmallRegions(
-      components.labels,
-      components.count,
-      components.colorIndex,
-      components.area,
-      width,
-      height,
-      minArea
-    );
-
-    postStatus(requestId, 'Cortando el vidrio en piezas...');
-    const targetPieceArea = Math.max(minArea * 2, pieceSize * pieceSize);
-    const pieces = subdivideRegions(
-      merged.labels,
-      merged.count,
-      merged.colorIndex,
-      merged.area,
-      width,
-      height,
-      targetPieceArea
-    );
-
-    const pieceColors = new Uint8ClampedArray(pieces.pieceCount * 3);
-    for (let i = 0; i < pieces.pieceCount; i++) {
-      const ci = pieces.pieceColorIndex[i];
-      pieceColors[i * 3] = glassColors[ci * 3];
-      pieceColors[i * 3 + 1] = glassColors[ci * 3 + 1];
-      pieceColors[i * 3 + 2] = glassColors[ci * 3 + 2];
-    }
+    postStatus(requestId, 'Calculando colores...');
+    const colors = computeGlassColors(delaunay, count, data, width, height);
 
     postStatus(requestId, 'Pintando el detalle fino...');
     const edgeMagnitude = computeSobelEdges(data, width, height);
@@ -77,24 +39,14 @@ self.onmessage = (event) => {
       {
         type: 'result',
         requestId,
-        labels: pieces.labels.buffer,
-        pieceColors: pieceColors.buffer,
-        pieceCentroidX: pieces.pieceCentroidX.buffer,
-        pieceCentroidY: pieces.pieceCentroidY.buffer,
-        pieceArea: pieces.pieceArea.buffer,
-        pieceCount: pieces.pieceCount,
+        points: points.buffer,
+        colors: colors.buffer,
+        pointCount: count,
         edgeMagnitude: edgeMagnitude.buffer,
         width,
         height,
       },
-      [
-        pieces.labels.buffer,
-        pieceColors.buffer,
-        pieces.pieceCentroidX.buffer,
-        pieces.pieceCentroidY.buffer,
-        pieces.pieceArea.buffer,
-        edgeMagnitude.buffer,
-      ]
+      [points.buffer, colors.buffer, edgeMagnitude.buffer]
     );
   } catch (err) {
     self.postMessage({ type: 'error', requestId, message: err.message || String(err) });
@@ -103,4 +55,66 @@ self.onmessage = (event) => {
 
 function postStatus(requestId, message) {
   self.postMessage({ type: 'status', requestId, message });
+}
+
+function clamp(v, min, max) {
+  return Math.min(max, Math.max(min, v));
+}
+
+/**
+ * Color medio (RGB) de cada celda de Voronoi, ya convertido a "color de
+ * vidrio". Muestrea la imagen con un paso adaptativo para imágenes
+ * grandes, reutilizando `delaunay.find(x, y, hint)` con la última celda
+ * encontrada como pista para que la búsqueda sea casi O(1) al recorrer la
+ * imagen en orden de barrido.
+ */
+function computeGlassColors(delaunay, pointCount, data, width, height) {
+  const sums = new Float64Array(pointCount * 3);
+  const counts = new Uint32Array(pointCount);
+
+  const totalPixels = width * height;
+  const targetSamples = 1_000_000;
+  const stride = Math.max(1, Math.round(Math.sqrt(totalPixels / targetSamples)));
+
+  let hint = 0;
+  for (let y = 0; y < height; y += stride) {
+    hint = delaunay.find(0, y, hint);
+    for (let x = 0; x < width; x += stride) {
+      hint = delaunay.find(x, y, hint);
+      const p = (y * width + x) * 4;
+      const base = hint * 3;
+      sums[base] += data[p];
+      sums[base + 1] += data[p + 1];
+      sums[base + 2] += data[p + 2];
+      counts[hint]++;
+    }
+  }
+
+  const colors = new Uint8ClampedArray(pointCount * 3);
+  for (let i = 0; i < pointCount; i++) {
+    const base = i * 3;
+    let r;
+    let g;
+    let b;
+    if (counts[i] > 0) {
+      r = sums[base] / counts[i];
+      g = sums[base + 1] / counts[i];
+      b = sums[base + 2] / counts[i];
+    } else {
+      // Celda muy pequeña que el muestreo por stride no tocó: usamos el
+      // píxel exacto de la semilla como respaldo.
+      const px = Math.min(width - 1, Math.max(0, Math.round(delaunay.points[i * 2])));
+      const py = Math.min(height - 1, Math.max(0, Math.round(delaunay.points[i * 2 + 1])));
+      const p = (py * width + px) * 4;
+      r = data[p];
+      g = data[p + 1];
+      b = data[p + 2];
+    }
+    const [gr, gg, gb] = glassifyColor(r, g, b);
+    colors[base] = gr;
+    colors[base + 1] = gg;
+    colors[base + 2] = gb;
+  }
+
+  return colors;
 }

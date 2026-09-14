@@ -27,38 +27,43 @@ para regenerarlo.
 
 ## Cómo funciona
 
-El algoritmo no genera un mosaico aleatorio: segmenta la propia imagen en regiones de
-color, así que las piezas terminan siguiendo los contornos reales del sujeto (la cara,
-los ojos, la boca, la ropa...), como en una vidriera figurativa real.
+El vidrio real se corta en piezas de pocos lados rectos (triángulos, cuadriláteros,
+pentágonos, hexágonos como mucho) — nunca en la silueta exacta de lo que haya debajo (un
+mechón de pelo, un pliegue de tela). El algoritmo está pensado para reproducir justo eso:
+un mosaico de figuras geométricas simples, con el detalle fino de la foto (rasgos de una
+cara, pliegues de ropa) recuperado como trazo pintado encima del vidrio, no como piezas
+que calcan ese contorno.
 
 1. Se cargan los píxeles de la imagen en un `ImageData` (limitando el lado más largo a
    2000 px para mantener el rendimiento).
-2. **Cuantización a colores de vidrio**: se agrupan los colores de la imagen en un número
-   limitado de tonos (k-means) y cada tono se satura/ajusta para que parezca un color de
-   vidrio real (más vívido, menos fotográfico) en vez del color medio exacto de la foto.
-3. **Segmentación en regiones**: se agrupan en componentes conexas los píxeles que
-   comparten el mismo color de vidrio, así una pieza es, por ejemplo, toda la cara o
-   toda la manga de una túnica.
-4. **Fusión de detalles finos con su pieza**: en una vidriera real, los ojos, las cejas,
-   la boca o los pliegues de la ropa no son piezas de vidrio separadas — van pintados
-   (grisalla) sobre una única pieza más grande. Por eso las regiones pequeñas (ruido,
-   pero también esos detalles finos) se funden con la región grande más cercana mediante
-   un BFS multi-fuente, dejando piezas simples y grandes como en una vidriera figurativa
-   real.
-5. **Corte de piezas grandes**: las regiones grandes y planas que sobran (fondo, un
-   pliegue amplio de tela) se subdividen en varias piezas — igual que una lámina de
-   vidrio real se corta en varios trozos — usando un diagrama de Delaunay local
-   ([`d3-delaunay`](https://github.com/d3/d3-delaunay)) por región.
+2. **Puntos semilla**: se generan puntos distribuidos uniformemente al azar sobre el
+   lienzo (su densidad depende del control "Tamaño de las piezas"), sin ningún sesgo
+   hacia bordes o contornos concretos.
+3. **Diagrama de Voronoi**: con esos puntos se construye un diagrama de Voronoi
+   ([`d3-delaunay`](https://github.com/d3/d3-delaunay)), que por construcción son
+   siempre polígonos de lados rectos.
+4. **Simplificación a como mucho 6 lados**: cualquier celda con más de 6 vértices se
+   simplifica (algoritmo de Visvalingam-Whyatt: se elimina repetidamente el vértice
+   menos significativo) hasta dejarla en 6 o menos. Así cada pieza final es una figura
+   geométrica simple, como el vidrio cortado real.
+5. **Color de cada pieza**: se calcula el color medio de los píxeles originales que caen
+   dentro de cada celda (con `delaunay.find(x, y, hint)`, muy rápido al recorrer la
+   imagen en orden de barrido) y se convierte en un "color de vidrio" más saturado y
+   vívido que el promedio fotográfico.
 6. **Detalle pintado**: se calcula un mapa de bordes (Sobel) sobre la foto original y se
    pinta como un trazo oscuro fino y translúcido encima de las piezas — así reaparecen
-   los ojos, la nariz o los pliegues como líneas finas "pintadas" en vez de piezas de
-   vidrio separadas, igual que en una vidriera real.
-7. Se dibuja el plomo detectando los píxeles donde cambia de pieza y dilatando esa línea
-   al grosor pedido, y opcionalmente se añade un brillo/gradiente radial suave dentro de
-   cada pieza para dar sensación de textura de vidrio.
+   los ojos, la nariz, las cejas o los pliegues de la ropa como líneas finas "pintadas",
+   sin necesidad de que ninguna pieza tenga esa forma.
+7. Se dibuja el plomo trazando la malla exacta del Voronoi (no la simplificada, para que
+   las piezas vecinas siempre encajen sin huecos), y opcionalmente se añade un
+   brillo/gradiente radial suave dentro de cada pieza para dar sensación de textura de
+   vidrio.
 
-Los pasos 2–6 (los más costosos computacionalmente) se ejecutan en un **Web Worker**, así
-que la interfaz nunca se bloquea mientras se procesa una imagen.
+Los pasos 2, 5 y 6 (los más costosos computacionalmente) se ejecutan en un **Web
+Worker**, así que la interfaz nunca se bloquea mientras se procesa una imagen. La
+construcción del Voronoi, su simplificación y el dibujado ocurren en el hilo principal
+porque son baratos — así, cambiar el grosor del plomo, el brillo o el detalle pintado se
+redibuja al instante sin volver a tocar el worker.
 
 ## Estructura del proyecto
 
@@ -73,14 +78,14 @@ src/
   style.css                   Estilos
   modules/
     imageLoader.js            Carga de archivos / drag&drop / imagen de ejemplo
-    colorQuantize.js          Cuantización a colores de vidrio (k-means + saturación)
-    regionSegmentation.js     Componentes conexas + fusión de regiones diminutas
-    pieceSubdivision.js       Corte de regiones grandes en varias piezas (Delaunay local)
+    pointGenerator.js         Puntos semilla uniformemente aleatorios
+    polygonSimplify.js        Simplifica un polígono a como mucho N vértices (Visvalingam-Whyatt)
+    glassColor.js             Convierte un color medio de foto en un color de vidrio saturado
     sobel.js                  Detección de bordes sobre la foto original (detalle pintado)
-    segmentRenderer.js        Pintado del resultado (relleno, plomo, brillo, detalle pintado)
+    voronoiRenderer.js        Reconstruye el Voronoi y pinta el resultado (relleno, plomo, brillo, detalle)
     ui.js                     Utilidades de UI (debounce, tabs, mensajes de estado)
   worker/
-    glassWorker.js            Web Worker: orquesta cuantización + segmentación + corte + bordes
+    glassWorker.js            Web Worker: puntos + Voronoi + color medio por celda + bordes Sobel
 ```
 
 ## Requisitos
@@ -131,15 +136,11 @@ al día.
    selector de archivos). También puedes probar con el botón **"Usar imagen de
    ejemplo"**, que genera una imagen sintética sin necesidad de subir ningún archivo.
 2. Ajusta los controles a tu gusto:
-   - **Colores de vidrio**: número de tonos a los que se reduce la imagen. Menos colores
-     da piezas más grandes y simples, como en una vidriera real.
-   - **Tamaño de las piezas**: también controla qué tan agresivamente se funden los
-     detalles finos (ojos, boca, pliegues) con la pieza que los rodea, y el tamaño
-     máximo de cada fragmento antes de cortarlo en varios. Piezas más grandes = figuras
-     más simples.
+   - **Tamaño de las piezas**: tamaño aproximado (en píxeles) de cada figura geométrica.
+     Piezas más grandes = mosaico más simple; piezas más pequeñas = más detalle.
    - **Detalle pintado**: intensidad del trazo oscuro fino que se pinta sobre el vidrio
-     (a la manera de la grisalla) para recuperar los rasgos finos sin convertirlos en
-     piezas de vidrio separadas.
+     (a la manera de la grisalla) para recuperar rasgos como ojos, cejas o pliegues sin
+     necesidad de que ninguna pieza tenga esa forma.
    - **Grosor del plomo**: ancho de las líneas oscuras que separan las piezas.
    - **Brillo del vidrio**: intensidad del gradiente que simula la textura del cristal.
    - **Plomo con tono cálido**: alterna entre plomo negro y un tono marrón oscuro.
@@ -150,26 +151,26 @@ al día.
 
 ## Notas técnicas
 
-- El umbral de fusión de regiones es una **fracción del área total de la imagen** (no un
-  nº de píxeles fijo), para que escale igual con cualquier resolución: así ojos, cejas,
-  boca o nariz se funden con la piel circundante sea cual sea el tamaño de la foto.
-- Esa fusión usa un BFS multi-fuente sembrado desde todas las regiones "grandes" a la
-  vez: cada píxel de una región pequeña queda asignado a la región grande cuya "onda" lo
-  alcanza primero, lo que en la práctica equivale a fundirlo con su vecina más próxima,
-  en una sola pasada O(ancho×alto).
-- El corte de regiones grandes en varias piezas reutiliza `delaunay.find(x, y, hint)`
-  (igual que la versión anterior del proyecto) para asignar cada píxel a su fragmento
-  más cercano de forma muy rápida, pero aplicado solo dentro de cada región en vez de a
-  toda la imagen.
-- El plomo se obtiene detectando los píxeles donde una pieza linda con otra distinta, y
-  dilatando esa línea al grosor pedido mediante una dilatación separable
-  (horizontal + vertical) de coste O(ancho×alto), independiente del grosor elegido.
+- La simplificación de cada celda a como mucho 6 vértices se hace de forma independiente
+  por celda, así que sus lados recortados no siempre coinciden exactamente con los de la
+  celda vecina. Para que eso nunca se note como un hueco, el render primero rellena la
+  celda **exacta** de Voronoi (la teselación real, sin huecos posibles) y encima repinta
+  la versión simplificada del mismo color: cualquier resquicio que deje la
+  simplificación queda cubierto por el color correcto en vez de dejar un hueco visible.
+- El plomo, en cambio, se traza sobre la malla **exacta** del Voronoi (`voronoi.render`),
+  no sobre los polígonos simplificados, para que las líneas entre piezas vecinas siempre
+  encajen perfectamente.
+- El color medio por celda usa `delaunay.find(x, y, hint)` reutilizando el índice de la
+  última consulta como punto de partida, lo que lo hace muy rápido al recorrer la imagen
+  en orden de barrido (scanline). Para imágenes grandes se aplica además un muestreo con
+  paso (stride) adaptativo en vez de leer cada píxel individual.
 - El detalle pintado reutiliza el mapa de bordes Sobel calculado sobre la imagen
-  original (no sobre los colores de vidrio ya cuantizados) y lo compone como una mezcla
-  proporcional a su intensidad de borde, sin ningún umbral duro ni dilatación, para que
-  el trazo se vea suave y difuminado como una pincelada, no como un contorno técnico.
+  original y lo compone como una mezcla proporcional a su intensidad de borde, sin
+  ningún umbral duro ni dilatación, para que el trazo se vea suave y difuminado como una
+  pincelada, no como un contorno técnico.
 - Cambiar el grosor del plomo, el brillo del vidrio o el detalle pintado **no** vuelve a
-  llamar al worker: esos parámetros solo afectan al dibujado final, así que se
-  re-renderizan al instante reutilizando las piezas y colores ya calculados. Cambiar los
-  colores de vidrio o el tamaño de las piezas sí dispara un nuevo cálculo en el worker,
-  porque cambia la segmentación.
+  llamar al worker: esos parámetros solo afectan al dibujado final (reconstruir el
+  Voronoi y redibujar es prácticamente instantáneo), así que se re-renderizan al
+  instante reutilizando los puntos y colores ya calculados. Cambiar el tamaño de las
+  piezas sí dispara un nuevo cálculo en el worker, porque cambia la posición de los
+  puntos semilla.
